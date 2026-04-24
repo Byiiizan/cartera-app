@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mi Cartera</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f5f5f3; color: #111; min-height: 100vh; }
+  .container { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem; }
+  .header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 12px; }
+  .header-left .label { font-size: 12px; color: #888; margin-bottom: 2px; }
+  .header-left .nombre { font-size: 26px; font-weight: 500; }
+  .header-left .sub { font-size: 12px; color: #888; margin-top: 2px; }
+  select { font-size: 14px; padding: 7px 12px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+  .kpis { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  .kpi { background: #fff; border-radius: 8px; padding: 12px 16px; flex: 1; min-width: 130px; }
+  .kpi .kpi-label { font-size: 12px; color: #888; margin-bottom: 4px; }
+  .kpi .kpi-value { font-size: 20px; font-weight: 500; }
+  .controles { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .btn-group { display: flex; gap: 4px; }
+  .btn { font-size: 13px; padding: 5px 12px; border-radius: 6px; border: 1px solid #ddd; background: transparent; color: #666; cursor: pointer; transition: all .15s; }
+  .btn.active { background: #111; color: #fff; border-color: #111; }
+  .grafico-box { background: #fff; border-radius: 12px; padding: 1.2rem; margin-bottom: 1.5rem; }
+  .loading { display: flex; align-items: center; justify-content: center; height: 260px; color: #888; font-size: 14px; }
+  .error { background: #fff0f0; color: #c00; border-radius: 8px; padding: 10px 14px; margin-bottom: 1rem; font-size: 13px; }
+  .footer { font-size: 12px; color: #aaa; text-align: center; margin-top: 1rem; }
+  canvas { max-height: 260px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div class="header-left">
+      <div class="label">Cartera</div>
+      <div class="nombre" id="nombre-cliente">—</div>
+      <div class="sub" id="sub-cliente"> </div>
+    </div>
+    <select id="sel-cliente">
+      <option>PABLO</option>
+      <option>IZAN</option>
+      <option>MERINO</option>
+      <option>NOE</option>
+      <option>HERREROS</option>
+      <option>NONA</option>
+    </select>
+  </div>
+
+  <div id="error-box" class="error" style="display:none"></div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="kpi-label">Valor actual</div><div class="kpi-value" id="k-valor">—</div></div>
+    <div class="kpi"><div class="kpi-label">Coste</div><div class="kpi-value" id="k-coste">—</div></div>
+    <div class="kpi"><div class="kpi-label">Resultado</div><div class="kpi-value" id="k-resultado">—</div></div>
+    <div class="kpi"><div class="kpi-label">Rentabilidad</div><div class="kpi-value" id="k-rent">—</div></div>
+    <div class="kpi"><div class="kpi-label">Drawdown máx.</div><div class="kpi-value" id="k-dd">—</div></div>
+  </div>
+
+  <div class="controles">
+    <div class="btn-group">
+      <button class="btn active" data-tab="valor">Valor (€)</button>
+      <button class="btn" data-tab="rentabilidad">Rentabilidad (%)</button>
+    </div>
+    <div class="btn-group">
+      <button class="btn" data-days="7">1S</button>
+      <button class="btn" data-days="30">1M</button>
+      <button class="btn" data-days="182">6M</button>
+      <button class="btn" data-days="365">1A</button>
+      <button class="btn active" data-days="0">Total</button>
+    </div>
+  </div>
+
+  <div class="grafico-box">
+    <div id="loading" class="loading">Cargando datos…</div>
+    <canvas id="chart" style="display:none"></canvas>
+  </div>
+
+  <div class="footer">Próximamente: posiciones · aportaciones periódicas · comparativa vs benchmark</div>
+</div>
+
+<script>
+const API = "https://script.google.com/macros/s/AKfycbxRelSnuO17hyFZXUOcUN_HvstItSxY_CC33OiMNu4VRJuih1KrjY-IZp92ZpL-U0pH/exec";
+const TOKEN = "token-gestor-xxxx";
+
+let chart = null;
+let historial = [];
+let tab = "valor";
+let days = 0;
+let cliente = "PABLO";
+
+const fmtEur = n => n == null ? "—" : n.toLocaleString("es-ES", {minimumFractionDigits:2, maximumFractionDigits:2}) + " €";
+const fmtPct = n => n == null ? "—" : (n*100).toFixed(2) + "%";
+const green = "#1D9E75", red = "#D85A30", blue = "#185FA5", amber = "#b07d00";
+
+function setKPI(id, val, color) {
+  const el = document.getElementById(id);
+  el.textContent = val;
+  el.style.color = color || "#111";
+}
+
+function mostrarError(msg) {
+  const el = document.getElementById("error-box");
+  el.textContent = "Error: " + msg;
+  el.style.display = msg ? "block" : "none";
+}
+
+function setLoading(on) {
+  document.getElementById("loading").style.display = on ? "flex" : "none";
+  document.getElementById("chart").style.display = on ? "none" : "block";
+}
+
+async function cargarDatos() {
+  setLoading(true);
+  mostrarError("");
+  document.getElementById("nombre-cliente").textContent = cliente;
+
+  try {
+    const [r1, r2] = await Promise.all([
+      fetch(`${API}?action=resumen&cliente=${cliente}&token=${TOKEN}`).then(r => r.json()),
+      fetch(`${API}?action=historico&cliente=${cliente}&token=${TOKEN}`).then(r => r.json()),
+    ]);
+
+    if (!r1.ok) throw new Error(r1.error);
+    if (!r2.ok) throw new Error(r2.error);
+
+    const res = r1.data;
+    const rentPos = res.rentabilidad >= 0;
+    const resPos  = res.resultado    >= 0;
+
+    setKPI("k-valor",     fmtEur(res.valorTotal));
+    setKPI("k-coste",     fmtEur(res.costePosicion));
+    setKPI("k-resultado", fmtEur(res.resultado),    resPos  ? green : red);
+    setKPI("k-rent",      fmtPct(res.rentabilidad), rentPos ? green : red);
+    setKPI("k-dd",        fmtPct(res.drawdownMax),  amber);
+
+    document.getElementById("sub-cliente").textContent =
+      res.fechaInicio ? `Desde ${res.fechaInicio} · ${res.diasTotal} días` : "";
+
+    let datos = r2.data.datos.filter(d => d.fecha && d.valorTotal > 0);
+
+    if (days > 0) {
+      const corte = new Date();
+      corte.setDate(corte.getDate() - days);
+      datos = datos.filter(d => new Date(d.fecha) >= corte);
+    }
+
+    // Samplear máx 300 puntos para fluidez
+    if (datos.length > 300) {
+      const step = Math.ceil(datos.length / 300);
+      datos = datos.filter((_, i) => i % step === 0 || i === datos.length - 1);
+    }
+
+    historial = datos;
+    dibujarGrafico(rentPos);
+
+  } catch(e) {
+    mostrarError(e.message);
+    setLoading(false);
+  }
+}
+
+function dibujarGrafico(rentPos) {
+  const labels = historial.map(d => d.fecha);
+  const valores = historial.map(d => tab === "valor" ? d.valorTotal : d.rentabilidad);
+  const color   = tab === "rentabilidad" ? (rentPos ? green : red) : blue;
+
+  setLoading(false);
+
+  if (chart) { chart.destroy(); chart = null; }
+
+  const ctx = document.getElementById("chart").getContext("2d");
+
+  const tickFmt = (val) => {
+    const d = new Date(val);
+    if (isNaN(d)) return val;
+    return !days || days >= 365
+      ? d.toLocaleDateString("es-ES", {month:"short", year:"2-digit"})
+      : d.toLocaleDateString("es-ES", {day:"2-digit", month:"short"});
+  };
+
+  chart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        data: valores,
+        borderColor: color,
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        tension: 0.3,
+        fill: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => tab === "rentabilidad"
+              ? fmtPct(ctx.parsed.y)
+              : fmtEur(ctx.parsed.y)
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: {
+            maxTicksLimit: 8,
+            color: "#888",
+            font: { size: 11 },
+            callback: (_, i) => tickFmt(labels[i])
+          },
+          grid: { display: false },
+          border: { display: false }
+        },
+        y: {
+          ticks: {
+            color: "#888",
+            font: { size: 11 },
+            callback: v => tab === "rentabilidad"
+              ? (v*100).toFixed(1)+"%"
+              : (v/1000).toFixed(0)+"k"
+          },
+          grid: { color: "#f0f0ee" },
+          border: { display: false }
+        }
+      }
+    }
+  });
+}
+
+// Eventos selector cliente
+document.getElementById("sel-cliente").addEventListener("change", e => {
+  cliente = e.target.value;
+  cargarDatos();
+});
+
+// Eventos tabs
+document.querySelectorAll("[data-tab]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("[data-tab]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    tab = btn.dataset.tab;
+    if (historial.length) dibujarGrafico(document.getElementById("k-rent").style.color === green);
+  });
+});
+
+// Eventos rango
+document.querySelectorAll("[data-days]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("[data-days]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    days = parseInt(btn.dataset.days);
+    cargarDatos();
+  });
+});
+
+// Arrancar
+cargarDatos();
+</script>
+</body>
+</html>
